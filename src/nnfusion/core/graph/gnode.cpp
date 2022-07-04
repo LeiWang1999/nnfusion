@@ -58,9 +58,11 @@ void GNode::initialize(const std::shared_ptr<Op> op_ptr,
 
     for (size_t i = 0; i < input_gnodes.size(); ++i)
     {
+        /*
         NNFUSION_CHECK(input_gnodes.at(i)->get_output_size() == 1)
             << "Argument " << i << input_gnodes.at(i)->get_op_type()
             << " must produce exactly one value.";
+            */
         m_inputs.emplace_back(
             std::make_shared<Input>(input_gnodes.at(i)->get_outputs().at(0)->get_element_type(),
                                     input_gnodes.at(i)->get_outputs().at(0)->get_partial_shape()));
@@ -414,7 +416,7 @@ void FusedGNode::set_inputs_and_outputs(std::shared_ptr<Graph> graph)
         m_op_ctxs.push_back(ctx);
     }
 
-    // Regirster input tensors
+    // Register input tensors
     for (const auto& m_node : m_order_nodes)
     {
         // Add non-control-edges as inputs of fused node

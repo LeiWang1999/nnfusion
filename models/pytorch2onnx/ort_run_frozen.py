@@ -27,8 +27,12 @@ args = parser.parse_args()
 if not os.path.exists(args.file):
     parser.exit(1, 'The specified file does not exist: {}'.format(args.file))
 
-onnx.checker.check_model(args.file)
-print("ONNX model check passed!")
+try:
+    onnx.checker.check_model(args.file)
+except Exception as e:
+    print(e)
+else:
+    print("ONNX model check passed!")
 
 def get_numpy(tensor):
     # ONNX Data Types Doc: https://github.com/onnx/onnx/blob/master/docs/IR.md#standard-data-types
@@ -95,8 +99,6 @@ for k, v in args.symbolic_dims.items():
 providers = args.provider.split(",")
 if "CPUExecutionProvider" not in providers:
     providers.append("CPUExecutionProvider")
-if 'CUDAExecutionProvider' in ort.get_available_providers() and 'CUDAExecutionProvider' not in providers:
-    providers = ['CUDAExecutionProvider'] + providers
 
 ort_session = ort.InferenceSession(args.file, sess_options, providers=providers)
 
@@ -124,7 +126,7 @@ for warmup in range(args.warmup):
             # print(out_flat[print_offset:max_len + print_offset], "offset=", print_offset)
 
 if args.iters > 0:
-    print('>> Evalutating Benchmark ...')
+    print('>> Evaluating Benchmark ...')
     t_start = time.time()
     for step in range(args.iters):
         ort_session.run(outputs_name, ort_inputs)
