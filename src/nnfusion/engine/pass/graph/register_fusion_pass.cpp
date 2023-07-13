@@ -48,8 +48,14 @@ namespace
         FuseGroup() {}
         std::unordered_set<shared_ptr<GNode>> nodes;
     };
-    const std::unordered_set<std::string> inlined_ops = {
-        "Broadcast", "Reshape", "Slice", "Convert", "CNHW2NCHW", "CNW2NCW", "HardSigmoid"};
+    const std::unordered_set<std::string> inlined_ops = {"Broadcast",
+                                                         "Reshape",
+                                                         "Slice",
+                                                         "Convert",
+                                                         "CNHW2NCHW",
+                                                         "CNW2NCW",
+                                                         "HardSigmoid",
+                                                         "Permutate"};
     std::unordered_set<std::string> skip_ops = {};
     void parse_skip_ops()
     {

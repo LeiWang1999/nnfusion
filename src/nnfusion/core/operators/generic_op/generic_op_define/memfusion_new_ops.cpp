@@ -508,6 +508,7 @@ REGISTER_OP(LayoutDot)
     .attr<bool>("transpose_B")
     .attr<size_t>("inner_i")
     .attr<size_t>("inner_j")
+    .attr<int>("splitk", 0)
     .attr<int>("output_layout")
     .infershape(
         [](std::shared_ptr<graph::GNode> gnode) -> void
@@ -516,6 +517,7 @@ REGISTER_OP(LayoutDot)
                 std::dynamic_pointer_cast<nnfusion::op::GenericOp>(gnode->get_op_ptr());
             bool trans_a = generic_op->localOpConfig.getRoot()["transpose_A"];
             bool trans_b = generic_op->localOpConfig.getRoot()["transpose_B"];
+            int splitk = generic_op->localOpConfig.getRoot()["splitk"];
 
             //TODO(leiwang1999):currently only support for NT Layout
             NNFUSION_CHECK(2 == gnode->get_input_size());
@@ -529,6 +531,9 @@ REGISTER_OP(LayoutDot)
             {
                 nnfusion::Shape output_shape{trans_a ? input0_shape[1]: input0_shape[0],
                                              trans_b ? input1_shape[0]: input1_shape[1] };
+                if (splitk > 0)
+                    // insert splitk to the head of output_shape
+                    output_shape.insert(output_shape.begin(), splitk);
                 gnode->set_output_type_and_shape(0, gnode->get_input_element_type(0), output_shape);
             }
             else if (input0_shape.size() == 3)
@@ -537,6 +542,9 @@ REGISTER_OP(LayoutDot)
                                              trans_a ? input0_shape[2] : input0_shape[1],
                                              trans_b ? input1_shape[0] : input1_shape[1] 
                                             };
+                if (splitk > 0)
+                    // insert splitk to the head of output_shape
+                    output_shape.insert(output_shape.begin(), splitk);
                 gnode->set_output_type_and_shape(0, gnode->get_input_element_type(0), output_shape);
             }
             // print trans_a and trans_b
@@ -555,42 +563,102 @@ REGISTER_OP(LayoutDot)
             int output_layout = generic_op->localOpConfig.getRoot()["output_layout"];
             bool trans_a = generic_op->localOpConfig.getRoot()["transpose_A"];
             bool trans_b = generic_op->localOpConfig.getRoot()["transpose_B"];
-
-            string fuse_template =
-                R"( temp0@A_fused_layout@ +=! @input0@@A_layout@ where M in @M@;)";
-            string compute_template =
-                R"( @output0@[M, N] +=! temp0@A_fused_layout@ * @input1@@B_layout@; )";
-            string ir_template = fuse_template + compute_template;
-            op::OpConfig::any op_config;
-            op_config["M"] = 16384;
-            op_config["A_fused_layout"] = trans_a? "[K, M]" : "[M, K]";
-            op_config["B_layout"] = trans_b? "[N, K]" : "[K, N]";
-
-            auto A_shape = curr->get_input_shape(0);
-            int raxis = A_shape.size() - 1;
-            string A_layout;
-            size_t stride = 16384;
-            for (int i = 0; i < A_shape.size(); i++)
+            int splitk = generic_op->localOpConfig.getRoot()["splitk"];
+            auto input0_shape = curr->get_input_shape(0);
+            auto input1_shape = curr->get_input_shape(1);
+            size_t k = trans_a ? input0_shape[input0_shape.size() - 2]
+                               : input0_shape[input0_shape.size() - 1];
+            size_t m = 1;
+            if (3 == input0_shape.size())
             {
-                if (i > 0)
-                    A_layout += ", ";
-                if (i == raxis)
-                    A_layout += "K";
-                else
+                m = input0_shape[0];
+                m = m * (trans_a ? input0_shape[input0_shape.size() - 1]
+                                 : input0_shape[input0_shape.size() - 2]);
+            }
+            else if (2 == input0_shape.size())
+            {
+                m = trans_a ? input0_shape[input0_shape.size() - 1]
+                            : input0_shape[input0_shape.size() - 2];
+            }
+  
+            if (splitk)
+            {
+                string ir_template =
+                    R"( @output0@@output0_layout@ +=! @input0@@input0_layout@ * @input1@@input1_layout@ where K0 in @K0@, K in @K@; )";
+
+                vector<string> input0_layout, input1_layout, output0_layout;
+                output0_layout.push_back("K0");
+                std::string K_expr = "K0*" + to_string(k / splitk) + "+K";
+                for (size_t i = 0; i + 2 < input0_shape.size(); i++)
                 {
-                    stride /= A_shape[i];
-                    A_layout += "M//" + to_string(stride) + "%" + to_string(A_shape[i]);
+                    input0_layout.push_back("S" + std::to_string(i));
+                    output0_layout.push_back("S" + std::to_string(i));
                 }
-            }
-            op_config["A_layout"] = "[" + A_layout + "]";
+                output0_layout.push_back("N");
+                output0_layout.push_back("M");
+                input0_layout.push_back(trans_a ? K_expr : "N");
+                input0_layout.push_back(trans_a ? "N" : K_expr);
+                input1_layout.push_back(trans_b ? "M" : K_expr);
+                input1_layout.push_back(trans_b ? K_expr : "M");
+                for (size_t i = 0; i + 2 < input1_shape.size(); i++)
+                {
+                    input1_layout.push_back("E" + std::to_string(i));
+                    output0_layout.push_back("E" + std::to_string(i));
+                }
 
-            auto ir = op::create_code_from_template(ir_template, op_config);
+                op::OpConfig::any op_config;
+                op_config["input0_layout"] = nnfusion::vector_to_string(input0_layout);
+                op_config["input1_layout"] = nnfusion::vector_to_string(input1_layout);
+                op_config["output0_layout"] = nnfusion::vector_to_string(output0_layout);
+                op_config["K0"] = splitk;
+                op_config["K"] = k / splitk;
+                auto ir = op::create_code_from_template(ir_template, op_config);
 
-            if (curr->get_output_element_type(0) == nnfusion::element::f16)
-            {
-                ir += "## @: output_layout=" + to_string(output_layout);
+                if (curr->get_output_element_type(0) == nnfusion::element::f16)
+                {
+                    ir += "## @: output_layout=" + to_string(output_layout);
+                }
+
+                return ir;
+            }else{
+                string fuse_template =
+                    R"( temp0@A_fused_layout@ +=! @input0@@A_layout@ where M in @M@;)";
+                string compute_template =
+                    R"( @output0@[M, N] +=! temp0@A_fused_layout@ * @input1@@B_layout@; )";
+                string ir_template = fuse_template + compute_template;
+                op::OpConfig::any op_config;
+                op_config["M"] = m;
+                op_config["A_fused_layout"] = trans_a ? "[K, M]" : "[M, K]";
+                op_config["B_layout"] = trans_b ? "[N, K]" : "[K, N]";
+
+                auto A_shape = curr->get_input_shape(0);
+                int raxis = A_shape.size() - 1;
+                string A_layout;
+                size_t stride = m;
+                for (int i = 0; i < A_shape.size(); i++)
+                {
+                    if (i > 0)
+                        A_layout += ", ";
+                    if (i == raxis)
+                        A_layout += "K";
+                    else
+                    {
+                        stride /= A_shape[i];
+                        A_layout += "M//" + to_string(stride) + "%" + to_string(A_shape[i]);
+                    }
+                }
+                op_config["A_layout"] = "[" + A_layout + "]";
+
+                auto ir = op::create_code_from_template(ir_template, op_config);
+
+                if (curr->get_output_element_type(0) == nnfusion::element::f16)
+                {
+                    ir += "## @: output_layout=" + to_string(output_layout);
+                }
+
+                return ir;
             }
-            return ir;
+           
         });
 
 REGISTER_OP(LayoutBMM)
@@ -806,4 +874,163 @@ REGISTER_OP(QuantLinear)
             op_config["output0_layout"] = nnfusion::vector_to_string(output_layout);
             auto ir = op::create_code_from_template(ir_template, op_config);
             return ir;
+        });
+
+REGISTER_OP(LayoutQuantLinear)
+    .attr<int>("bits", 4)
+    .attr<bool>("transpose_A")
+    .attr<bool>("transpose_B")
+    .attr<size_t>("inner_i")
+    .attr<size_t>("inner_j")
+    .attr<int>("splitk", 0)
+    .attr<int>("output_layout")
+    .infershape(
+        [](std::shared_ptr<graph::GNode> gnode) -> void
+        {
+            auto generic_op =
+                std::dynamic_pointer_cast<nnfusion::op::GenericOp>(gnode->get_op_ptr());
+            bool trans_a = generic_op->localOpConfig.getRoot()["transpose_A"];
+            bool trans_b = generic_op->localOpConfig.getRoot()["transpose_B"];
+            int splitk = generic_op->localOpConfig.getRoot()["splitk"];
+
+            //TODO(leiwang1999):currently only support for NT Layout
+            NNFUSION_CHECK(2 == gnode->get_input_size());
+            // input 0 shape is B, S, K, input 1 is K, N
+            // output sahpe is B, S, N
+            auto input0_shape = nnfusion::Shape(gnode->get_input_shape(0));
+            auto input1_shape = nnfusion::Shape(gnode->get_input_shape(1));
+            NNFUSION_CHECK(input0_shape.size() == 2 || input0_shape.size() == 3 ||
+                           input1_shape.size() == 2);
+            if (input0_shape.size() == 2)
+            {
+                nnfusion::Shape output_shape{trans_a ? input0_shape[1] : input0_shape[0],
+                                             trans_b ? input1_shape[0] : input1_shape[1]};
+                if (splitk > 0)
+                    // insert splitk to the head of output_shape
+                    output_shape.insert(output_shape.begin(), splitk);
+                gnode->set_output_type_and_shape(0, gnode->get_input_element_type(0), output_shape);
+            }
+            else if (input0_shape.size() == 3)
+            {
+                nnfusion::Shape output_shape{input0_shape[0],
+                                             trans_a ? input0_shape[2] : input0_shape[1],
+                                             trans_b ? input1_shape[0] : input1_shape[1]};
+                if (splitk > 0)
+                    // insert splitk to the head of output_shape
+                    output_shape.insert(output_shape.begin(), splitk);
+                gnode->set_output_type_and_shape(0, gnode->get_input_element_type(0), output_shape);
+            }
+            // print trans_a and trans_b
+            NNFUSION_LOG(INFO) << "transa, b is " << trans_a << " " << trans_b;
+            // print input0 shape and input1 shape
+            NNFUSION_LOG(INFO) << "input0 shape is " << gnode->get_input_shape(0);
+            NNFUSION_LOG(INFO) << "input1 shape is " << gnode->get_input_shape(1);
+            NNFUSION_LOG(INFO) << "output shape is " << gnode->get_output_shape(0);
+        })
+    .translate_v2(
+        [](std::shared_ptr<graph::GNode> curr) -> std::string
+        {
+            // todo(leiwang1999): apply correct experession.
+            auto generic_op =
+                std::dynamic_pointer_cast<nnfusion::op::GenericOp>(curr->get_op_ptr());
+            int output_layout = generic_op->localOpConfig.getRoot()["output_layout"];
+            bool trans_a = generic_op->localOpConfig.getRoot()["transpose_A"];
+            bool trans_b = generic_op->localOpConfig.getRoot()["transpose_B"];
+            int splitk = generic_op->localOpConfig.getRoot()["splitk"];
+            auto input0_shape = curr->get_input_shape(0);
+            auto input1_shape = curr->get_input_shape(1);
+            size_t k = trans_a ? input0_shape[input0_shape.size() - 2]
+                               : input0_shape[input0_shape.size() - 1];
+            size_t m = 1;
+            if (3 == input0_shape.size())
+            {
+                m = input0_shape[0];
+                m = m * (trans_a ? input0_shape[input0_shape.size() - 1]
+                                 : input0_shape[input0_shape.size() - 2]);
+            }
+            else if (2 == input0_shape.size())
+            {
+                m = trans_a ? input0_shape[input0_shape.size() - 1]
+                            : input0_shape[input0_shape.size() - 2];
+            }
+
+            if (splitk)
+            {
+                string ir_template =
+                    R"( @output0@@output0_layout@ +=! @input0@@input0_layout@ * @input1@@input1_layout@ where K0 in @K0@, K in @K@; )";
+
+                vector<string> input0_layout, input1_layout, output0_layout;
+                output0_layout.push_back("K0");
+                std::string K_expr = "K0*" + to_string(k / splitk) + "+K";
+                for (size_t i = 0; i + 2 < input0_shape.size(); i++)
+                {
+                    input0_layout.push_back("S" + std::to_string(i));
+                    output0_layout.push_back("S" + std::to_string(i));
+                }
+                output0_layout.push_back("N");
+                output0_layout.push_back("M");
+                input0_layout.push_back(trans_a ? K_expr : "N");
+                input0_layout.push_back(trans_a ? "N" : K_expr);
+                input1_layout.push_back(trans_b ? "M" : K_expr);
+                input1_layout.push_back(trans_b ? K_expr : "M");
+                for (size_t i = 0; i + 2 < input1_shape.size(); i++)
+                {
+                    input1_layout.push_back("E" + std::to_string(i));
+                    output0_layout.push_back("E" + std::to_string(i));
+                }
+
+                op::OpConfig::any op_config;
+                op_config["input0_layout"] = nnfusion::vector_to_string(input0_layout);
+                op_config["input1_layout"] = nnfusion::vector_to_string(input1_layout);
+                op_config["output0_layout"] = nnfusion::vector_to_string(output0_layout);
+                op_config["K0"] = splitk;
+                op_config["K"] = k / splitk;
+                auto ir = op::create_code_from_template(ir_template, op_config);
+
+                if (curr->get_output_element_type(0) == nnfusion::element::f16)
+                {
+                    ir += "## @: output_layout=" + to_string(output_layout);
+                }
+
+                return ir;
+            }
+            else
+            {
+                string fuse_template =
+                    R"( temp0@A_fused_layout@ +=! @input0@@A_layout@ where M in @M@;)";
+                string compute_template =
+                    R"( @output0@[M, N] +=! temp0@A_fused_layout@ * @input1@@B_layout@; )";
+                string ir_template = fuse_template + compute_template;
+                op::OpConfig::any op_config;
+                op_config["M"] = m;
+                op_config["A_fused_layout"] = trans_a ? "[K, M]" : "[M, K]";
+                op_config["B_layout"] = trans_b ? "[N, K]" : "[K, N]";
+
+                auto A_shape = curr->get_input_shape(0);
+                int raxis = A_shape.size() - 1;
+                string A_layout;
+                size_t stride = m;
+                for (int i = 0; i < A_shape.size(); i++)
+                {
+                    if (i > 0)
+                        A_layout += ", ";
+                    if (i == raxis)
+                        A_layout += "K";
+                    else
+                    {
+                        stride /= A_shape[i];
+                        A_layout += "M//" + to_string(stride) + "%" + to_string(A_shape[i]);
+                    }
+                }
+                op_config["A_layout"] = "[" + A_layout + "]";
+
+                auto ir = op::create_code_from_template(ir_template, op_config);
+
+                if (curr->get_output_element_type(0) == nnfusion::element::f16)
+                {
+                    ir += "## @: output_layout=" + to_string(output_layout);
+                }
+
+                return ir;
+            }
         });
