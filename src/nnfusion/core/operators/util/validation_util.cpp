@@ -195,7 +195,7 @@ std::tuple<nnfusion::element::Type, nnfusion::PartialShape>
 
     nnfusion::Dimension filter_output_channel_count =
         (filters_shape.rank().is_static()
-             ? (data_format == "NCW" || data_format == "NCHW" || data_format == "NCDHW")
+             ? (data_format == "NCW" || data_format == "NCHW" || data_format == "NCDHW" || data_format == "NHWC")
                    ? filters_shape[0]
                    : filters_shape[3]
              : nnfusion::Dimension::dynamic());
@@ -227,7 +227,7 @@ std::tuple<nnfusion::element::Type, nnfusion::PartialShape>
             filter_spatial_shape[i] =
                 (data_format == "NCW" || data_format == "NCHW" || data_format == "NCDHW")
                     ? filters_shape[i + 2]
-                    : filters_shape[i];
+                    : filters_shape[i + 1];
         }
     }
 
@@ -263,7 +263,9 @@ std::tuple<nnfusion::element::Type, nnfusion::PartialShape>
                                               true);
 
     nnfusion::PartialShape batch_output_shape(nnfusion::PartialShape::dynamic(spatial_rank + 2));
-
+    NNFUSION_LOG(INFO) << "data_spatial_shape " << data_spatial_shape;
+    NNFUSION_LOG(INFO) << "data_output_shape " << data_output_shape;
+    NNFUSION_LOG(INFO) << "filter_spatial_shape " << filter_spatial_shape;
     if (data_format == "NCW" || data_format == "NCHW" || data_format == "NCDHW")
     {
         batch_output_shape[0] = batch_size;
