@@ -134,7 +134,11 @@ namespace nnfusion
                     NNFUSION_CHECK(node_proto.output_size() == 1)
                         << "Binary op should only has one output.";
                     op->set_name(node_proto.output(0));
+                    NNFUSION_LOG(INFO) << "op name: " << op->get_name();
+
                     auto gnode = m_graph->add_node_and_edge(op, {lhs_index, rhs_index});
+                    NNFUSION_LOG(INFO) << "lhs_index: " << gnode->get_in_edge(0)->get_src()->get_name();
+                    NNFUSION_LOG(INFO) << "rhs_index: " << gnode->get_in_edge(1)->get_src()->get_name();
                     NamedNodeVector ret{{node_proto.output(0), gnode}};
                     return ret;
                 }

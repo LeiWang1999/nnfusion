@@ -133,7 +133,7 @@ bool TensorCoreRewritePass::run_on_graph(std::shared_ptr<Graph>& graph)
             if (dim == 2 || M == out_shape[dim - 2] || op->get_transpose_A())
                 continue; // not necessary
             if (N % 8 > 0 || M % 8 > 0 || N * M % 256 > 0 || K % 16 > 0)
-                continue;
+                continue; // NCHW -> NHWC(memory) -> NCHW -> CNHW()
             auto op0 =
                 make_shared<op::Reshape>(nnfusion::get_default_order(input0_shape), Shape{M, K});
             auto op1 = make_shared<op::Dot>();

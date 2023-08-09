@@ -33,12 +33,15 @@ std::string cuda::get_cudnn_datatype(element::Type dtype)
 
 LanguageUnit_p cuda::cudnn_tensor_descriptor_from_shape(const nnfusion::Shape& shape,
                                                         string desc,
-                                                        element::Type type)
+                                                        element::Type type,
+                                                        string data_format)
 {
     LanguageUnit_p _lu(new LanguageUnit);
     auto& lu = *_lu;
     string data_type = cuda::get_cudnn_datatype(type);
     string tensor_format = "CUDNN_TENSOR_NCHW";
+    if (data_format == "NHWC")
+        tensor_format = "CUDNN_TENSOR_NHWC";
     lu << "cudnnTensorDescriptor_t " << desc << ";\n";
     lu << "CUDNN_SAFE_CALL(cudnnCreateTensorDescriptor(&" << desc << "));\n";
 
@@ -60,13 +63,23 @@ LanguageUnit_p cuda::cudnn_tensor_descriptor_from_shape(const nnfusion::Shape& s
     }
     else if (shape.size() == 4)
     {
-        lu << "CUDNN_SAFE_CALL(cudnnSetTensor4dDescriptor(" << desc << ", " << tensor_format << ", "
-           << data_type << ", " << static_cast<int>(shape[0]) << ", " << static_cast<int>(shape[1])
-           << ", " << static_cast<int>(shape[2]) << ", " << static_cast<int>(shape[3]) << "));\n";
+        if (data_format == "NCHW")
+            lu << "CUDNN_SAFE_CALL(cudnnSetTensor4dDescriptor(" << desc << ", " << tensor_format
+               << ", " << data_type << ", " << static_cast<int>(shape[0]) << ", "
+               << static_cast<int>(shape[1]) << ", " << static_cast<int>(shape[2]) << ", "
+               << static_cast<int>(shape[3]) << "));\n";
+        else if (data_format == "NHWC")
+            lu << "CUDNN_SAFE_CALL(cudnnSetTensor4dDescriptor(" << desc << ", " << tensor_format
+               << ", " << data_type << ", " << static_cast<int>(shape[0]) << ", "
+               << static_cast<int>(shape[3]) << ", " << static_cast<int>(shape[1]) << ", "
+               << static_cast<int>(shape[2]) << "));\n";
+        else
+            NNFUSION_CHECK_FAIL() << "Unsupported data format: " << data_format;
     }
     else
     {
-        auto expand_vector_int = [](string name, vector<int>& d) {
+        auto expand_vector_int = [](string name, vector<int>& d)
+        {
             stringstream ss;
             NNFUSION_CHECK(d.size() > 0);
             ss << "int " << name << "[] = {";
@@ -94,14 +107,18 @@ LanguageUnit_p cuda::cudnn_tensor_descriptor_from_shape(const nnfusion::Shape& s
     return _lu;
 }
 
-LanguageUnit_p
-    cuda::get_cudnn_filter_descriptor(const Shape& shape, string desc, element::Type type)
+LanguageUnit_p cuda::get_cudnn_filter_descriptor(const Shape& shape,
+                                                 string desc,
+                                                 element::Type type,
+                                                 string data_format)
 {
     LanguageUnit_p _lu(new LanguageUnit);
     auto& lu = *_lu;
 
     string data_type = cuda::get_cudnn_datatype(type);
     string tensor_format = "CUDNN_TENSOR_NCHW";
+    if (data_format == "NHWC")
+        tensor_format = "CUDNN_TENSOR_NHWC";
     lu << "cudnnFilterDescriptor_t " << desc << ";\n";
     lu << "CUDNN_SAFE_CALL(cudnnCreateFilterDescriptor(&" << desc << "));\n";
 
@@ -111,33 +128,68 @@ LanguageUnit_p
     {
         dimensions[i] = static_cast<int>(shape[idx++]);
     }
+    NNFUSION_LOG(INFO) << "dimensions: " << join(dimensions, ", ");
+    NNFUSION_LOG(INFO) << "tensor_format: " << tensor_format;
 
     if (dimensions.size() <= 4)
     {
-        lu << "CUDNN_SAFE_CALL(cudnnSetFilter4dDescriptor(" << desc << ", "
-           /*dataType=*/
-           << data_type << ", "
-           /*format=*/
-           << tensor_format << ", "
-           /*dimension_size*/
-           << dimensions[0] << ", "
-           /*dimension_size*/
-           << dimensions[1] << ", "
-           /*dimension_size*/
-           << dimensions[2] << ", "
-           /*dimension_size*/
-           << dimensions[3] << "));\n";
+        if (data_format == "NCHW")
+            lu << "CUDNN_SAFE_CALL(cudnnSetFilter4dDescriptor(" << desc
+               << ", "
+               /*dataType=*/
+               << data_type
+               << ", "
+               /*format=*/
+               << tensor_format
+               << ", "
+               /*dimension_size*/
+               << dimensions[0]
+               << ", "
+               /*dimension_size*/
+               << dimensions[1]
+               << ", "
+               /*dimension_size*/
+               << dimensions[2]
+               << ", "
+               /*dimension_size*/
+               << dimensions[3] << "));\n";
+        else if (data_format == "NHWC")
+            lu << "CUDNN_SAFE_CALL(cudnnSetFilter4dDescriptor(" << desc
+               << ", "
+               /*dataType=*/
+               << data_type
+               << ", "
+               /*format=*/
+               << tensor_format
+               << ", "
+               /*dimension_size*/
+               << dimensions[0]
+               << ", "
+               /*dimension_size*/
+               << dimensions[3]
+               << ", "
+               /*dimension_size*/
+               << dimensions[1]
+               << ", "
+               /*dimension_size*/
+               << dimensions[2] << "));\n";
+        else
+            NNFUSION_CHECK_FAIL() << "Unsupported data format: " << data_format;
     }
     else
     {
         lu << "CUDNN_SAFE_CALL("
-           << "cudnnSetFilterNdDescriptor(" << desc << ", "
+           << "cudnnSetFilterNdDescriptor(" << desc
+           << ", "
            /*dataType=*/
-           << data_type << ", "
+           << data_type
+           << ", "
            /*format=*/
-           << tensor_format << ", "
+           << tensor_format
+           << ", "
            /*num_dimensions=*/
-           << static_cast<int>(dimensions.size()) << ", "
+           << static_cast<int>(dimensions.size())
+           << ", "
            /*dimensions*/
            << dimensions.data() << "));\n";
     }
@@ -148,13 +200,16 @@ LanguageUnit_p cuda::get_cudnn_convolution_descriptor(const Shape& padding,
                                                       const Strides& window_movement_strides,
                                                       const Strides& window_dilation_strides,
                                                       string desc,
-                                                      element::Type type)
+                                                      element::Type type,
+                                                      string data_format)
 {
     LanguageUnit_p _lu(new LanguageUnit);
     auto& lu = *_lu;
 
     string data_type = cuda::get_cudnn_datatype(type);
     string tensor_format = "CUDNN_TENSOR_NCHW";
+    if (data_format == "NHWC")
+        tensor_format = "CUDNN_TENSOR_NHWC";
     lu << "cudnnConvolutionDescriptor_t " << desc << ";\n";
     lu << "CUDNN_SAFE_CALL(cudnnCreateConvolutionDescriptor(&" << desc << "));\n";
 
@@ -178,7 +233,8 @@ LanguageUnit_p cuda::get_cudnn_convolution_descriptor(const Shape& padding,
     }
     else
     {
-        auto expand_vector_int = [](string name, vector<int>& d) {
+        auto expand_vector_int = [](string name, vector<int>& d)
+        {
             stringstream ss;
             NNFUSION_CHECK(d.size() > 0);
             ss << "int " << name << "[] = {";
@@ -240,7 +296,8 @@ void @prefix@_free()
 
 )",
         {
-            {"prefix", prefix}, {"ratio", ratio},
+            {"prefix", prefix},
+            {"ratio", ratio},
         });
     LanguageUnit_p lu(new LanguageUnit(mangled_name, code));
     return lu;
@@ -268,15 +325,19 @@ CUDNN_SAFE_CALL(cudnnSetActivationDescriptor(@activation_desc@, @activation_mode
 
 )",
         {
-            {"activation_mode", cudnn_activation_mode}, {"coef", coef}, {"activation_desc", desc},
+            {"activation_mode", cudnn_activation_mode},
+            {"coef", coef},
+            {"activation_desc", desc},
         });
 
     LanguageUnit_p lu(new LanguageUnit(mangled_name, code));
     return lu;
 }
 
-LanguageUnit_p
-    cuda::get_cudnn_bias_descriptor(const nnfusion::Shape& shape, string desc, element::Type type)
+LanguageUnit_p cuda::get_cudnn_bias_descriptor(const nnfusion::Shape& shape,
+                                               string desc,
+                                               element::Type type,
+                                               string data_format)
 {
     LanguageUnit_p _lu(new LanguageUnit);
     auto& lu = *_lu;
@@ -298,16 +359,31 @@ LanguageUnit_p
         {
             dimensions[pos++] = static_cast<int>(shape[i]);
         }
-        lu << "CUDNN_SAFE_CALL(cudnnSetTensor4dDescriptorEx(" << desc << ", " << data_type << ", "
-           << dimensions[0] << ", " << dimensions[1] << ", " << dimensions[2] << ", "
-           << dimensions[3] << ", 1, 1, 1, 1));\n";
+        if (data_format == "NCHW")
+            lu << "CUDNN_SAFE_CALL(cudnnSetTensor4dDescriptorEx(" << desc << ", " << data_type
+               << ", " << dimensions[0] << ", " << dimensions[1] << ", " << dimensions[2] << ", "
+               << dimensions[3] << ", 1, 1, 1, 1));\n";
+        else if (data_format == "NHWC")
+            lu << "CUDNN_SAFE_CALL(cudnnSetTensor4dDescriptorEx(" << desc << ", " << data_type
+               << ", " << dimensions[0] << ", " << dimensions[2] << ", " << dimensions[3] << ", "
+               << dimensions[1] << ", 1, 1, 1, 1));\n";
+        else
+            NNFUSION_CHECK_FAIL() << "Unsupported data format: " << data_format;
     }
     else if (shape.size() == 4)
     {
-        lu << "CUDNN_SAFE_CALL(cudnnSetTensor4dDescriptorEx(" << desc << ", " << data_type << ", "
-           << static_cast<int>(shape[0]) << ", " << static_cast<int>(shape[1]) << ", "
-           << static_cast<int>(shape[2]) << ", " << static_cast<int>(shape[3])
-           << ", 1, 1, 1, 1));\n";
+        if (data_format == "NCHW")
+            lu << "CUDNN_SAFE_CALL(cudnnSetTensor4dDescriptorEx(" << desc << ", " << data_type
+               << ", " << static_cast<int>(shape[0]) << ", " << static_cast<int>(shape[1]) << ", "
+               << static_cast<int>(shape[2]) << ", " << static_cast<int>(shape[3])
+               << ", 1, 1, 1, 1));\n";
+        else if (data_format == "NHWC")
+            lu << "CUDNN_SAFE_CALL(cudnnSetTensor4dDescriptorEx(" << desc << ", " << data_type
+               << ", " << static_cast<int>(shape[0]) << ", " << static_cast<int>(shape[3]) << ", "
+               << static_cast<int>(shape[1]) << ", " << static_cast<int>(shape[2])
+               << ", 1, 1, 1, 1));\n";
+        else
+            NNFUSION_CHECK_FAIL() << "Unsupported data format: " << data_format;
     }
 
     return _lu;

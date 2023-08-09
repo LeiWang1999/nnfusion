@@ -26,6 +26,7 @@ set(SRC
     autodiff_pass.cpp
     dot_transpose_pass.cpp
     dot_permutation_pass.cpp
+    nchw_to_nhwc_pass.cpp
     reduce_fusion_pass.cpp
     register_fusion_pass.cpp
     split_softmax_pass.cpp

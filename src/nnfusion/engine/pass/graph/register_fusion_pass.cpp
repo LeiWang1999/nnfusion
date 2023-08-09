@@ -55,7 +55,10 @@ namespace
                                                          "CNHW2NCHW",
                                                          "CNW2NCW",
                                                          "HardSigmoid",
-                                                         "Permutate"};
+                                                         "Permutate",
+                                                         "LayoutCNHW2CNHW",
+                                                         //  "NCHW2LayoutCNHW"
+                                                         "NHWC2LayoutNHWC"};
     std::unordered_set<std::string> skip_ops = {};
     void parse_skip_ops()
     {
@@ -374,6 +377,7 @@ public:
 
         for (auto group : fusion_groups)
         {
+            // NNFUSION_LOG(INFO) << "Apply fusion group: " << group;
             NNFUSION_CHECK(group.contains("nodes") && group["nodes"].is_array());
             if (!group.contains("code"))
                 continue;
@@ -444,11 +448,45 @@ private:
     shared_ptr<Graph> m_graph;
 };
 
+void dump_the_graph(std::shared_ptr<Graph>& graph)
+{
+    auto nodes = graph->get_ordered_ops();
+
+    // Create an output file stream
+    std::ofstream file("graph_dump.txt");
+
+    if (!file.is_open())
+    {
+        std::cerr << "Error opening file for writing." << std::endl;
+        return;
+    }
+
+    // Write nodes and src/dst into the file
+    for (const auto& node : nodes)
+    {
+        file << "Node: " << node->get_name() << std::endl;
+
+        // Assuming that Graph has a get_edges() method that returns a vector of pairs of src and dst node IDs
+        auto edges = node->get_in_edges();
+
+        for (const auto& edge : edges)
+        {
+            file << "Src: " << edge->get_src()->get_name() << ", Dst: " << edge->get_src()->get_name() << std::endl;
+        }
+
+        file << std::endl; // Add an empty line for readability
+    }
+
+    // Close the file
+    file.close();
+}
+
 bool RegisterFusionPass::run_on_graph(std::shared_ptr<Graph>& graph)
 {
     if (FLAGS_ftune_output_file == "")
         return true;
     NNFUSION_LOG(INFO) << "RegisterFusionPass Start";
+    // dump_the_graph(graph);
     parse_skip_ops();
     auto optimizer = RegisterFusionOptimizer(graph);
     if (!optimizer.Optimize())

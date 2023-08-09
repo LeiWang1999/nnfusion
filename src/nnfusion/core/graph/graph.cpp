@@ -267,8 +267,8 @@ const std::shared_ptr<nnfusion::graph::Edge>
         auto source_shape = source->get_output_partial_shape(x);
         auto dest_shape = dest->get_input_partial_shape(y);
         NNFUSION_CHECK(source_shape.compatible(dest_shape))
-            << "Fail to add edge, the source shape (" << source_shape
-            << ") does not match the dest shape (" << dest_shape << ").";
+            << "Fail to add edge, the source" << source->get_name() << " shape (" << source_shape
+            << ") does not match the dest" << dest->get_name() <<" shape (" << dest_shape << ").";
     }
 
     std::shared_ptr<Edge> edge = nullptr;

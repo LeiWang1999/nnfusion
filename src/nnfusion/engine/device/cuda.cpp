@@ -12,8 +12,9 @@
 #include "nnfusion/engine/pass/graph/batchnorm_inference_folding_pass.hpp"
 #include "nnfusion/engine/pass/graph/blockfusion_pass.hpp"
 #include "nnfusion/engine/pass/graph/common_subexpression_elimination_pass.hpp"
-#include "nnfusion/engine/pass/graph/dot_transpose_pass.hpp"
 #include "nnfusion/engine/pass/graph/dot_permutation_pass.hpp"
+#include "nnfusion/engine/pass/graph/dot_transpose_pass.hpp"
+#include "nnfusion/engine/pass/graph/nchw_to_nhwc_pass.hpp"
 #include "nnfusion/engine/pass/graph/gemm_fusion_pass.hpp"
 #include "nnfusion/engine/pass/graph/gnode_device_dispatcher.hpp"
 #include "nnfusion/engine/pass/graph/gradient_weight_mapping_pass.hpp"
@@ -60,6 +61,7 @@ CudaEngine::CudaEngine()
     g_passes->push_back(make_shared<MultiReshapeFoldingPass>());
     g_passes->push_back(make_shared<VectorDotTransposePass>());
     g_passes->push_back(make_shared<GemmFusionPass>());
+    g_passes->push_back(make_shared<NCHW2NHWCPass>());
     g_passes->push_back(make_shared<BatchNormInferenceFoldingPass>());
     g_passes->push_back(make_shared<AssignLayoutPass>());
     //superscaler pass

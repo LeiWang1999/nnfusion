@@ -65,6 +65,8 @@ bool DotPermutationPass::run_on_graph(std::shared_ptr<nnfusion::graph::Graph>& g
         return true;
 #define OFFSET2D(x, y, ld) ((x) * (ld) + (y))
 #define OFFSET4D(x, y, z, w, ld1, ld2, ld3) ((x) * (ld1) + (y) * (ld2) + (z) * (ld3) + (w))
+#define OFFSET6D(x, y, z, w, u, v, ld1, ld2, ld3, ld4, ld5) \
+    ((x) * (ld1) + (y) * (ld2) + (z) * (ld3) + (w) * (ld4) + (u) * (ld5) + (v))
     parse_skip_ops();
     parse_splitk_factors();
     // print splitk_factors
@@ -81,7 +83,9 @@ bool DotPermutationPass::run_on_graph(std::shared_ptr<nnfusion::graph::Graph>& g
     {
         if (skip_ops.count(it->get_op_type()))
             continue;
-        if (it->get_op_type() != "Dot" && it->get_op_type() != "BatchMatMul" && it->get_op_type() != "QuantLinear")
+        if (it->get_op_type() != "Dot" && it->get_op_type() != "BatchMatMul" &&
+            it->get_op_type() != "QuantLinear" && it->get_op_type() != "Convolution" &&
+            it->get_op_type() != "ImplicitGemm" && it->get_op_type() != "Add")
         {
             continue;
         }
@@ -535,8 +539,275 @@ bool DotPermutationPass::run_on_graph(std::shared_ptr<nnfusion::graph::Graph>& g
                 NNFUSION_LOG(ERROR) << "weight_node's element_type is not f16";
             }
         }
+        else if (it->get_op_type() == "ImplicitGemm"){
+            NNFUSION_LOG(INFO) << "Replace ImplicitGemm with layoutDot";
+            // get the input nodes
+            auto input_node = it->get_in_edge(0)->get_src();
+            auto weight_node = it->get_in_edge(1)->get_src();
+            // insert a NCHW2LayoutCNHW Node
+            auto implicit_gemm_op =
+                std::dynamic_pointer_cast<nnfusion::op::GenericOp>(it->get_op_ptr());
+            // get N, C, H, W, P, S, D
+            const int N = implicit_gemm_op->localOpConfig.getRoot()["N"];
+            // C represents the number of output channels
+            const int C = implicit_gemm_op->localOpConfig.getRoot()["C"];
+            const int H = implicit_gemm_op->localOpConfig.getRoot()["H"];
+            const int W = implicit_gemm_op->localOpConfig.getRoot()["W"];
+            const int P = implicit_gemm_op->localOpConfig.getRoot()["P"];
+            const int S = implicit_gemm_op->localOpConfig.getRoot()["S"];
+            const int D = implicit_gemm_op->localOpConfig.getRoot()["D"];
+            NNFUSION_LOG(INFO) << "N: " << N << " C: " << C << " H: " << H << " W: " << W << " P: " << P << " S: " << S << " D: " << D;
+            nnfusion::op::OpConfig::any NCHW2LayoutCNHWConfig;
+            auto nchw2layoutcnhw_op = std::make_shared<nnfusion::op::GenericOp>(
+                "NCHW2LayoutCNHW", "NCHW2LayoutCNHW", NCHW2LayoutCNHWConfig);
+            auto nchw2layoutcnhw_gnode = graph->add_node_and_edge(nchw2layoutcnhw_op, GNodeVector{input_node});
+            auto edge = it->get_in_edge(0);
+            graph->remove_edge(edge);
+            graph->add_edge(nchw2layoutcnhw_gnode, 0, it, 0);
+            // insert a LayoutImplicitGemm Node
+            nnfusion::op::OpConfig::any LayoutImplicitGemmConfig;
+            // get N, C, H, W, P, S, D
+            LayoutImplicitGemmConfig["N"] = N;
+            LayoutImplicitGemmConfig["C"] = C;
+            LayoutImplicitGemmConfig["H"] = H;
+            LayoutImplicitGemmConfig["W"] = W;
+            LayoutImplicitGemmConfig["P"] = P;
+            LayoutImplicitGemmConfig["S"] = S;
+            LayoutImplicitGemmConfig["D"] = D;
+            LayoutImplicitGemmConfig["layout"] = true;
+
+            auto layout_implicit_gemm_op = std::make_shared<nnfusion::op::GenericOp>(
+                "LayoutImplicitGemm", "LayoutImplicitGemm", LayoutImplicitGemmConfig);
+            NNFUSION_LOG(INFO) << "Create LayoutImplicitGemm Node Done";
+            auto layout_implicit_gemm_gnode = graph->add_node_and_edge(
+                layout_implicit_gemm_op, GNodeVector{nchw2layoutcnhw_gnode, weight_node});
+            NNFUSION_LOG(INFO) << "Add LayoutImplicitGemm Node Done";
+
+            // insert a LayoutCNHW2CNHW Node after LayoutImplicitGemm Node
+
+            nnfusion::op::OpConfig::any LayoutCNHW2CNHWConfig;
+            auto layoutcnhw2cnhw_op = std::make_shared<nnfusion::op::GenericOp>(
+                "LayoutCNHW2CNHW", "LayoutCNHW2CNHW", LayoutCNHW2CNHWConfig);
+            auto layoutcnhw2cnhw_gnode = graph->add_node_and_edge(layoutcnhw2cnhw_op, GNodeVector{layout_implicit_gemm_gnode});
+
+            NNFUSION_LOG(INFO) << "create LayoutCNHW2CNHW Node done";
+
+            for (auto& edge : it->get_out_edges())
+            {
+                auto dst_node = edge->get_dst();
+                auto dst_input = edge->get_dst_input();
+                graph->remove_edge(edge);
+                graph->add_edge(layoutcnhw2cnhw_gnode, 0, dst_node, dst_input);
+            }
+            graph->remove_node(it);
+            NNFUSION_LOG(INFO) << "Replace ImplicitGemm with layouImplicit done";
+
+            // apply layout transform into weight node.
+            auto weight_op = dynamic_pointer_cast<nnfusion::op::Constant>(weight_node->get_op_ptr());
+            // assert weight_op != nullptr
+            NNFUSION_CHECK_NOT_NULLPTR(weight_op);
+            auto weight_shape = weight_node->get_output_shape(0);
+            NNFUSION_LOG(INFO) << "weight shape is " << weight_shape[0] << " " << weight_shape[1] << " " << weight_shape[2] << " " << weight_shape[3];
+            // get element_type
+            auto element_type = weight_op->get_type();
+
+            if (element_type == nnfusion::element::f16)
+            {
+                NNFUSION_LOG(INFO) << "weight_node's element_type is f16";
+                // rewrite data as first transpose
+                // get data
+                half_float::half* data = (half_float::half *)weight_op->get_data_ptr();
+                // create a temp storage
+                half_float::half* temp_data = (half_float::half*)(new char[weight_op->get_data_size()]);
+                // assume weight is nchw-> nhwc
+                auto N = weight_shape[0];
+                auto C = weight_shape[1];
+                auto H = weight_shape[2];
+                auto W = weight_shape[3];
+                NNFUSION_CHECK(N % 16 == 0);
+                NNFUSION_CHECK(C % 16 == 0);
+
+                // permutate nchw with (n // 16, c // 16, h, w, n % 16, c % 16)
+                for (int n = 0; n < N / 16; n++)
+                    for (int c = 0; c < C / 16; c++)
+                        for (int h = 0; h < H; h++)
+                            for (int w = 0; w < W; w++)
+                                for (int nn = 0; nn < 16; nn++)
+                                    for (int cc = 0; cc < 16; cc++)
+                                    {
+                                        temp_data[OFFSET6D(n,
+                                                           c,
+                                                           h,
+                                                           w,
+                                                           nn,
+                                                           cc,
+                                                           H * W * C * 16,
+                                                           W * H * 256,
+                                                           W * 256,
+                                                           256,
+                                                           16)] =
+                                            data[OFFSET4D(n * 16 + nn , c * 16 + cc, h, w, H * W * C, W * H, W)];
+                                    }
+                // cp temp_data to data
+                memcpy(data, temp_data, weight_op->get_data_size());
+            }
+            else{
+                NNFUSION_LOG(ERROR) << "weight_node's element_type is not f16";
+            }
+        }else if (it->get_op_type() == "Convolution"){
+            NNFUSION_LOG(INFO) << "Transform Convolution Data with LayoutTransform";
+
+            auto conv_op = static_pointer_cast<nnfusion::op::Convolution>(it->get_op_ptr());
+            auto input_node = it->get_in_edge(0)->get_src();
+            // get input channel
+            auto input_shape = input_node->get_output_shape(0);
+            auto input_channel = conv_op->get_data_format() == "NCHW" ? input_shape[1] : input_shape[3];
+            if (input_channel % 16 != 0)
+            {
+                NNFUSION_LOG(INFO) << "input channel is not multiple of 16, skip";
+                continue;
+            }
+
+            nnfusion::op::OpConfig::any NHWC2LayoutNHWCConfig;
+            auto nhwc2layoutnhwc_op = std::make_shared<nnfusion::op::GenericOp>(
+                "NHWC2LayoutNHWC", "NHWC2LayoutNHWC", NHWC2LayoutNHWCConfig);
+            auto nhwc2layoutnhwc_gnode = graph->add_node_and_edge(nhwc2layoutnhwc_op, GNodeVector{input_node});
+            auto edge = it->get_in_edge(0);
+            graph->remove_edge(edge);
+            graph->add_edge(nhwc2layoutnhwc_gnode, 0, it, 0);
+            NNFUSION_LOG(INFO) << "create LayoutCNHW2CNHW Node done";
+            auto weight_node = it->get_in_edge(1)->get_src();
+            auto weight_op =
+                dynamic_pointer_cast<nnfusion::op::Constant>(weight_node->get_op_ptr());
+            // assert weight_op != nullptr
+            NNFUSION_CHECK_NOT_NULLPTR(weight_op);
+            auto weight_shape = weight_node->get_output_shape(0);
+            NNFUSION_LOG(INFO) << "weight shape is " << weight_shape[0] << " " << weight_shape[1]
+                               << " " << weight_shape[2] << " " << weight_shape[3];
+            // get element_type
+            auto element_type = weight_op->get_type();
+
+            if (element_type == nnfusion::element::f16)
+            {
+                NNFUSION_LOG(INFO) << "weight_node's element_type is f16";
+                NNFUSION_CHECK(conv_op->get_data_format() == "NHWC") << "conv_op's data format is not NHWC, currently not support";
+                // rewrite data as first transpose
+                // get data
+                half_float::half* data = (half_float::half*)weight_op->get_data_ptr();
+                // create a temp storage
+                half_float::half* temp_data =
+                    (half_float::half*)(new char[weight_op->get_data_size()]);
+                // assume weight is nchw-> nhwc
+                auto N = weight_shape[0];
+                auto H = weight_shape[1];
+                auto W = weight_shape[2];
+                auto C = weight_shape[3];
+                NNFUSION_CHECK(N % 16 == 0);
+                NNFUSION_CHECK(C % 16 == 0);
+
+                // permutate nchw with (n // 16, c // 16, h, w, n % 16, c % 16)
+                for (int n = 0; n < N / 16; n++)
+                    for (int h = 0; h < H; h++)
+                        for (int w = 0; w < W; w++)
+                            for (int c = 0; c < C / 16; c++)
+                                for (int nn = 0; nn < 16; nn++)
+                                    for (int cc = 0; cc < 16; cc++)
+                                    {
+                                        temp_data[OFFSET6D(n,
+                                                           h,
+                                                           w,
+                                                           c,
+                                                           nn,
+                                                           cc,
+                                                           H * W * C * 16,
+                                                           W * C * 16,
+                                                           C * 16,
+                                                           256,
+                                                           16)] = data[OFFSET4D(n * 16 + nn,
+                                                                                h,
+                                                                                w,
+                                                                                c * 16 + cc,
+                                                                                H * W * C,
+                                                                                W * C,
+                                                                                C)];
+                                    }
+                // cp temp_data to data
+                memcpy(data, temp_data, weight_op->get_data_size());
+            }
+    }
+        else if (it->get_op_type() == "Add"){
+            NNFUSION_LOG(INFO) << "Transform Add Data with LayoutTransform";
+            auto add_op = static_pointer_cast<nnfusion::op::Add>(it->get_op_ptr());
+            auto input0_node = it->get_in_edge(0)->get_src();
+            auto input1_node = it->get_in_edge(1)->get_src();
+            auto output_edgs = it->get_out_edges();
+            NNFUSION_LOG(INFO) << "output edge size is " << output_edgs.size();
+            // filter rule: one of the input node is a bias add node
+            if(input1_node->get_op_type() != "Add" && input0_node->get_op_type() != "Add"){
+                NNFUSION_LOG(INFO) << "input node is not bias add node, skip";
+                continue;
+            }else{
+                NNFUSION_LOG(INFO) << "input node is bias add node, transform";
+                // get which node is bias add node
+                auto bias_add_node = input1_node->get_op_type() == "Add" ? input1_node : input0_node;
+                NNFUSION_LOG(INFO) << "bias add node is " << bias_add_node->get_op_type();
+                // get the node beside bias add node
+                auto beside_node = input1_node->get_op_type() == "Add" ? input0_node : input1_node;
+                auto output_edgs = beside_node->get_out_edges();
+                NNFUSION_LOG(INFO) << "beside_node output edge size is " << output_edgs.size();
+                NNFUSION_LOG(INFO) << "beside node is " << beside_node->get_op_type();
+                auto beside_id = input1_node->get_op_type() == "Add" ? 0 : 1;
+                // insert a NHWC2LayoutNHWC node
+                nnfusion::op::OpConfig::any NHWC2LayoutNHWCConfig;
+                auto nhwc2layoutnhwc_op = std::make_shared<nnfusion::op::GenericOp>(
+                    "NHWC2LayoutNHWC", "NHWC2LayoutNHWC", NHWC2LayoutNHWCConfig);
+                auto nhwc2layoutnhwc_gnode = graph->add_node_and_edge(nhwc2layoutnhwc_op, GNodeVector{beside_node});
+                auto edge = it->get_in_edge(beside_id);
+                graph->remove_edge(edge);
+                graph->add_edge(nhwc2layoutnhwc_gnode, 0, it, beside_id);
+                NNFUSION_LOG(INFO) << "create LayoutCNHW2CNHW Node done";
+            }
+        }
     }
 #undef OFFSET2D
 #undef OFFSET4D
+#undef OFFSET6D
+    // handle the case that two NHWC2LayoutNHWC node are connected
+    for (auto& it : nodes)
+    {
+        if(it->get_op_type() == "Add"){
+            auto add_op = static_pointer_cast<nnfusion::op::Add>(it->get_op_ptr());
+            auto input0_node = it->get_in_edge(0)->get_src();
+            auto input1_node = it->get_in_edge(1)->get_src();
+            if (input0_node->get_op_type() == "Convolution" &&
+                input1_node->get_op_type() == "Convolution"){
+                    NNFUSION_LOG(INFO) << "merge two NHWC2LayoutNHWC into one";
+            }
+        }
+    }
+    // simplify graph merge two NHWC2LayoutNHWC into one
+    for (auto& it : nodes)
+    {
+        auto output_edges = it->get_out_edges();
+        if(output_edges.size() == 2){
+            NNFUSION_LOG(INFO) << it->get_name() <<" output edge size is 2";
+            auto edge0 = output_edges[0];
+            auto edge1 = output_edges[1];
+            auto dst0 = edge0->get_dst();
+            auto dst1 = edge1->get_dst();
+            if (dst0->get_op_type() == "NHWC2LayoutNHWC" &&
+                dst1->get_op_type() == "NHWC2LayoutNHWC"){
+                NNFUSION_LOG(INFO) << "merge two NHWC2LayoutNHWC into one";
+                // keep dst0 node, remove dst1 node, connect the dst of dst1 to dst0
+                auto dst1_output_edges = dst1->get_out_edges();
+                auto dst1_output_node = dst1_output_edges[0]->get_dst();
+                auto dst1_output_input = dst1_output_edges[0]->get_dst_input();
+                NNFUSION_LOG(INFO) << "dst1_output_node is " << dst1_output_node->get_op_type();
+                NNFUSION_LOG(INFO) << "dst1_output_input is " << dst1_output_input;
+                graph->remove_node(dst1);
+                graph->add_edge(dst0, 0, dst1_output_node, dst1_output_input);
+            }
+        }
+    }
     return true;
 }

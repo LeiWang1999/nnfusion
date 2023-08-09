@@ -33,6 +33,7 @@ REGISTER_OP(MaxPool)
         auto& dtype = curr->get_element_type();
         bool is_1d = (output_shape.size() == 3);
         const bool is_nchw = _op->get_data_format() == "NCHW" ? true : false;
+        const bool is_nhwc = _op->get_data_format() == "NHWC" ? true : false;
         auto& m_strides = _op->get_window_movement_strides();
         auto& strides = _op->get_window_shape();
         auto& padding_below = _op->get_padding_below();
@@ -45,7 +46,7 @@ REGISTER_OP(MaxPool)
         {
             return std::string();
         }
-        if (!is_nchw)
+        if (!(is_nchw || is_nhwc))
         {
             return std::string();
         }
@@ -63,7 +64,7 @@ REGISTER_OP(MaxPool)
         if (!is_nchw)
         {
             // NHWC only support 1D and 2D
-            if (!(output_shape.size() == 3 && output_shape.size() == 4))
+            if (!(output_shape.size() == 3 || output_shape.size() == 4))
             {
                 return std::string();
             }
