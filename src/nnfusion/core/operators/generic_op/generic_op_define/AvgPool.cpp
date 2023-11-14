@@ -104,7 +104,7 @@ REGISTER_OP(AvgPool)
 
         if (!include_padding_in_avg_computation)
         {
-            avg_window_size = "(" + avg_window_size + ").call(`max`, const(1, `int32`))";
+            avg_window_size = "(" + avg_window_size + ").call(`max`, [1])";
         }
         else
         {

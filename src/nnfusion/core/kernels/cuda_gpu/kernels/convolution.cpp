@@ -95,26 +95,23 @@ LanguageUnit_p cuda::ConvolutionCudnn::emit_function_body()
 
     {
         // lu << "cudnnDataType_t data_type = " << get_cudnn_datatype(dtype) << ";\n";
-        lu << cudnn_tensor_descriptor_from_shape(input_shape, "tensor_desc_0", input_type, data_format)
+        lu << cudnn_tensor_descriptor_from_shape(input_shape, "tensor_desc_0", input_type)
                   ->get_code();
-        lu << cudnn_tensor_descriptor_from_shape(
-                  output_shape, "tensor_desc_1", output_type, data_format)
+        lu << cudnn_tensor_descriptor_from_shape(output_shape, "tensor_desc_1", output_type)
                   ->get_code();
-        lu << get_cudnn_filter_descriptor(filter_shape, "filter_desc", filter_type, data_format)
-                  ->get_code();
+        lu << get_cudnn_filter_descriptor(filter_shape, "filter_desc", filter_type)->get_code();
         lu << get_cudnn_convolution_descriptor(padding_below,
                                                window_movement_strides,
                                                window_dilation_strides,
                                                "conv_desc",
-                                               conv_type,
-                                               data_format)
+                                               conv_type)
                   ->get_code();
 
         if (with_bias)
         {
             auto bias_shape = m_context->inputs[2]->get_shape();
             auto bias_type = m_context->inputs[2]->get_element_type();
-            lu << get_cudnn_bias_descriptor(bias_shape, "tensor_desc_bias", bias_type, data_format)->get_code();
+            lu << get_cudnn_bias_descriptor(bias_shape, "tensor_desc_bias", bias_type)->get_code();
             lu << get_cudnn_activation_descriptor(activation, "tensor_desc_act", 0.0)->get_code();
         }
 
@@ -282,7 +279,7 @@ LanguageUnit_p cuda::ConvolutionCudnn::emit_function_signature()
     {
         stringstream ss;
         ss << m_context->tensors[i]->get_element_type().c_type_string() << "* ";
-        // default name is: "persit0", "persist1" ...
+        // defult name is: "persit0", "persist1" ...
         ss << m_context->tensors[i]->get_name();
         params.push_back(ss.str());
     }
@@ -355,7 +352,7 @@ LanguageUnit_p cuda::ConvolutionGradDataCudnn::emit_function_body()
         return nullptr;
     }
 
-    if (data_format != "NCHW" && data_format != "NCW"  && data_format != "NHWC")
+    if (data_format != "NCHW" && data_format != "NCW")
     {
         NNFUSION_LOG(NNFUSION_WARNING) << "Only support NCHW or NCW by now.";
         return nullptr;
@@ -387,16 +384,14 @@ LanguageUnit_p cuda::ConvolutionGradDataCudnn::emit_function_body()
 
     {
         // lu << "cudnnDataType_t data_type = " << get_cudnn_datatype(dtype) << ";\n";
-        lu << cudnn_tensor_descriptor_from_shape(dy_shape, "dy_desc", dy_type, data_format)->get_code();
-        lu << cudnn_tensor_descriptor_from_shape(dx_shape, "dx_desc", dx_type, data_format)->get_code();
-        lu << get_cudnn_filter_descriptor(filter_shape, "filter_desc", filter_type, data_format)
-                  ->get_code();
+        lu << cudnn_tensor_descriptor_from_shape(dy_shape, "dy_desc", dy_type)->get_code();
+        lu << cudnn_tensor_descriptor_from_shape(dx_shape, "dx_desc", dx_type)->get_code();
+        lu << get_cudnn_filter_descriptor(filter_shape, "filter_desc", filter_type)->get_code();
         lu << get_cudnn_convolution_descriptor(padding_below,
                                                window_movement_strides,
                                                window_dilation_strides,
                                                "conv_desc",
-                                               conv_type,
-                                               data_format)
+                                               conv_type)
                   ->get_code();
 
         lu << R"(
@@ -507,7 +502,7 @@ LanguageUnit_p cuda::ConvolutionGradDataCudnn::emit_function_signature()
     {
         stringstream ss;
         ss << m_context->tensors[i]->get_element_type().c_type_string() << "* ";
-        // default name is: "persit0", "persist1" ...
+        // defult name is: "persit0", "persist1" ...
         ss << m_context->tensors[i]->get_name();
         params.push_back(ss.str());
     }
@@ -570,7 +565,7 @@ LanguageUnit_p cuda::ConvolutionGradFilterCudnn::emit_function_body()
         return nullptr;
     }
 
-    if (data_format != "NCHW" && data_format != "NCW"  && data_format != "NHWC")
+    if (data_format != "NCHW" && data_format != "NCW")
     {
         NNFUSION_LOG(NNFUSION_WARNING) << "Only support NCHW or NCW by now.";
         return nullptr;
@@ -609,8 +604,7 @@ LanguageUnit_p cuda::ConvolutionGradFilterCudnn::emit_function_body()
                                                window_movement_strides,
                                                window_dilation_strides,
                                                "conv_desc",
-                                               conv_type,
-                                               data_format)
+                                               conv_type)
                   ->get_code();
 
         lu << R"(
@@ -721,7 +715,7 @@ LanguageUnit_p cuda::ConvolutionGradFilterCudnn::emit_function_signature()
     {
         stringstream ss;
         ss << m_context->tensors[i]->get_element_type().c_type_string() << "* ";
-        // default name is: "persit0", "persist1" ...
+        // defult name is: "persit0", "persist1" ...
         ss << m_context->tensors[i]->get_name();
         params.push_back(ss.str());
     }

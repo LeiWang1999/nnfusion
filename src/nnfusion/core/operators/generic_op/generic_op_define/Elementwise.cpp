@@ -64,15 +64,15 @@ static const std::unordered_map<std::string, element_op> ElementOpMap = {
     {"SigmoidBackprop",
      element_op("sigmoid_backprop",
                 "x1 / (const(2).cast(x0.dtype()) + (-x0).call(`exp`) + (x0).call(`exp`))")},
-    {"Equal", element_op("equal", "x0 == x1")},
-    {"NotEqual", element_op("not_equal", "x0 != x1")},
-    {"Greater", element_op("greater", "x0 > x1")},
-    {"GreaterEq", element_op("greater_equal", "x0 >= x1")},
-    {"Less", element_op("less", "x0 < x1")},
-    {"LessEq", element_op("less_equal", "x0 <= x1")},
-    {"Not", element_op("logical_not", "~x0")},
-    {"And", element_op("logical_and", "x0 & x1")},
-    {"Or", element_op("logical_or", "x0 | x1")}};
+    {"Equal", element_op("equal", "(x0 == x1).cast(`@output_datatype@`)")},
+    {"NotEqual", element_op("not_equal", "(x0 != x1).cast(`@output_datatype@`)")},
+    {"Greater", element_op("greater", "(x0 > x1).cast(`@output_datatype@`)")},
+    {"GreaterEq", element_op("greater_equal", "(x0 >= x1).cast(`@output_datatype@`)")},
+    {"Less", element_op("less", "(x0 < x1).cast(`@output_datatype@`)")},
+    {"LessEq", element_op("less_equal", "(x0 <= x1).cast(`@output_datatype@`)")},
+    {"Not", element_op("logical_not(", "~x0).cast(`@output_datatype@`)")},
+    {"And", element_op("logical_and", "(x0 & x1).cast(`@output_datatype@`)")},
+    {"Or", element_op("logical_or", "(x0 | x1).cast(`@output_datatype@`)")}};
 
 std::string replace_input_str(std::string ir)
 {
@@ -129,12 +129,16 @@ auto trans_elementwise = [](std::shared_ptr<graph::GNode>& node) {
     {
         expr += replace_input_str(_op_expr) + ";";
     }
+    auto output_datatype = node->get_output_element_type(0);
 
+    auto output_datatype_str = output_datatype.c_type_string();
+        // remove _t in output_datatype_str, example: int64_t to int64
+    output_datatype_str = output_datatype_str.substr(0, output_datatype_str.size() - 2);
     auto data_layout = op::create_layout_from_dims(node->get_output_shape(0));
     // NNFUSION_LOG(INFO) << op::create_code_from_template(
     //     expr, {{"data_layout", vector_to_string<std::vector<std::string>>(data_layout)}});
     return op::create_code_from_template(
-        expr, {{"data_layout", vector_to_string<std::vector<std::string>>(data_layout)}});
+        expr, {{"data_layout", vector_to_string<std::vector<std::string>>(data_layout)},{"output_datatype", output_datatype_str}});
 };
 
 #define REGISTER_ELEM_OP(op_name)                                                                  \

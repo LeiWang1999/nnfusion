@@ -16,24 +16,20 @@ namespace nnfusion
             std::string get_cudnn_datatype(element::Type type);
             LanguageUnit_p cudnn_tensor_descriptor_from_shape(const nnfusion::Shape& shape,
                                                               string desc,
-                                                              element::Type type,
-                                                              string data_format = "NCHW");
+                                                              element::Type type);
             LanguageUnit_p get_cudnn_convolution_descriptor(const Shape& padding,
                                                             const Strides& window_movement_strides,
                                                             const Strides& window_dilation_strides,
                                                             string desc,
-                                                            element::Type type = element::f32,
-                                                            string data_format = "NCHW");
+                                                            element::Type type = element::f32);
             LanguageUnit_p get_cudnn_filter_descriptor(const Shape& shape,
                                                        string desc,
-                                                       element::Type type = element::f32,
-                                                       string data_format = "NCHW");
+                                                       element::Type type = element::f32);
             LanguageUnit_p get_dropout_global_states(float ratio);
             LanguageUnit_p get_cudnn_activation_descriptor(string mode, string desc, float coef);
             LanguageUnit_p get_cudnn_bias_descriptor(const nnfusion::Shape& shape,
                                                      string desc,
-                                                     element::Type type,
-                                                     string data_format = "NCHW");
+                                                     element::Type type);
 
             inline std::string ratio2str(float ratio)
             {
