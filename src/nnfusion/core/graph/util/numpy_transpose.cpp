@@ -72,8 +72,20 @@ namespace nnfusion
                 }
             }
             else
-            {
-                NNFUSION_CHECK_FAIL() << numpy_transpose_error_str(order, in_shape);
+            {   
+                // // pop the max value from order
+                // auto max = std::max_element(order.begin(), order.end());
+                // order.erase(max);
+                // pop the min value from order
+                auto min = std::min_element(order.begin(), order.end());
+                order.erase(min);
+                // minus 1 for each element in order
+                for (auto& o : order)
+                {
+                    o -= 1;
+                }
+                
+                // NNFUSION_CHECK_FAIL() << numpy_transpose_error_str(order, in_shape);
             }
 
             // create output shape
